@@ -26,8 +26,7 @@ public class ServerThread extends Thread {
 
     public void run() {
         BluetoothSocket socket = null;
-        if (mServerSocket == null)
-        {
+        if (mServerSocket == null) {
             Log.d(Utils.TAG, "Server socket is null - something went wrong with Bluetooth stack initialization?");
             return;
         }

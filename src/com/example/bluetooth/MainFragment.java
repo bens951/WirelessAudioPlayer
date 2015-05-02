@@ -1,8 +1,5 @@
 package com.example.bluetooth;
 
-import java.util.ArrayList;
-import java.util.Set;
-
 import android.app.Activity;
 import android.app.Fragment;
 import android.bluetooth.BluetoothAdapter;
@@ -21,12 +18,12 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.View.OnClickListener;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
-import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
-import android.widget.CheckBox;
+import android.widget.Button;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -41,39 +38,79 @@ public class MainFragment extends Fragment implements OnItemClickListener {
     private static final int MENU_START_DISCOVERY             = 2;
 
     private BluetoothAdapter mBtAdaper;
-    private ArrayList<BluetoothDevice> mPairedDevices = new ArrayList<BluetoothDevice>();
     private StateChangedReceiver mStateChangedReceiver;
     private ListView mListView;
     private PairedDeviceAdapter mDataAdapter;
 
-    private Handler mHandler = new Handler() {
+    private Thread mServerThread, mClientThread;
 
+    private Handler mServerHandler = new Handler() {
         @Override
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
             switch (msg.what) {
+                case MessageType.DATA_RECEIVED:
+                    Toast.makeText(getActivity(), "DATA_RECEIVED " + new String((byte[]) msg.obj), Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.DIGEST_DID_NOT_MATCH:
+                    Toast.makeText(getActivity(), "DIGEST_DID_NOT_MATCH", Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.DATA_PROGRESS_UPDATE:
+                    Toast.makeText(getActivity(), "DATA_PROGRESS_UPDATE", Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.INVALID_HEADER:
+                    Toast.makeText(getActivity(), "INVALID_HEADER", Toast.LENGTH_SHORT).show();
+                    break;
+                default:
+                    break;
             }
         }
-        
+    };
+
+    private Handler mClientHandler = new Handler() {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            switch (msg.what) {
+                case MessageType.READY_FOR_DATA:
+                    if (mClientThread != null) {
+                        ((ClientThread) mClientThread).sendData("hello".getBytes());
+                    }
+                    break;
+                case MessageType.COULD_NOT_CONNECT:
+                    Toast.makeText(getActivity(), "COULD_NOT_CONNECT", Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.SENDING_DATA:
+                    Toast.makeText(getActivity(), "SENDING_DATA", Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.DATA_SENT_OK:
+                    Toast.makeText(getActivity(), "DATA_SENT_OK", Toast.LENGTH_SHORT).show();
+                    break;
+                case MessageType.DIGEST_DID_NOT_MATCH:
+                    Toast.makeText(getActivity(), "DIGEST_DID_NOT_MATCH", Toast.LENGTH_SHORT).show();
+                    break;
+                default:
+                    break;
+            }
+        }
     };
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Log.d(Utils.TAG, "MainFragment onCreate");
+        setHasOptionsMenu(true);
+        checkBlueToothAvailability();
+    }
+
+    private boolean checkBlueToothAvailability() {
         mBtAdaper = BluetoothAdapter.getDefaultAdapter();
         if (mBtAdaper == null) {
             Toast.makeText(getActivity(), "Device doesn't support bluetooth", Toast.LENGTH_LONG).show();
             getActivity().finish();
-            return;
+            return false;
         }
-        setHasOptionsMenu(true);
-        Log.d(Utils.TAG, "bt enable = " + mBtAdaper.isEnabled());
-        if (!mBtAdaper.isEnabled()) {
-            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(enableBtIntent, REQUEST_CODE_ENABLE_BT);
-        }
-        getActivity().registerReceiver(mBtFoundReceiver, new IntentFilter(BluetoothDevice.ACTION_FOUND));
+        return true;
     }
 
     @Override
@@ -91,18 +128,28 @@ public class MainFragment extends Fragment implements OnItemClickListener {
         return v;
     }
 
-    private void registerStateChangedReceiver() {
-        if (mStateChangedReceiver == null) {
-            IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
-            mStateChangedReceiver = new StateChangedReceiver();
-            getActivity().registerReceiver(mStateChangedReceiver, filter);
+    private void registerBlueToothReceiver() {
+        try {
+            if (mStateChangedReceiver == null) {
+                IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+                mStateChangedReceiver = new StateChangedReceiver();
+                getActivity().registerReceiver(mStateChangedReceiver, filter);
+            }
+            getActivity().registerReceiver(mBtFoundReceiver, new IntentFilter(BluetoothDevice.ACTION_FOUND));
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
-    private void unregisterStateChangedReceiver() {
-        if (mStateChangedReceiver != null) {
-            getActivity().unregisterReceiver(mStateChangedReceiver);
-            mStateChangedReceiver = null;
+    private void unregisterBlueToothReceiver() {
+        try {
+            if (mStateChangedReceiver != null) {
+                getActivity().unregisterReceiver(mStateChangedReceiver);
+                mStateChangedReceiver = null;
+            }
+            getActivity().unregisterReceiver(mBtFoundReceiver);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -148,8 +195,11 @@ public class MainFragment extends Fragment implements OnItemClickListener {
         Log.d(Utils.TAG, "onActivityResult requestCode = " + requestCode + ", resultCode = " + resultCode);
         switch (requestCode) {
             case REQUEST_CODE_ENABLE_BT:
-                if (resultCode != Activity.RESULT_OK) {
-                    // check result code
+                if (resultCode == Activity.RESULT_OK) {
+                    if (mServerThread == null && BlueToothPairedDeviceController.getInstance().getListSize() > 0) {
+                        mServerThread = new ServerThread(mBtAdaper, mServerHandler);
+                        mServerThread.start();
+                    }
                 }
                 break;
             default:
@@ -166,11 +216,11 @@ public class MainFragment extends Fragment implements OnItemClickListener {
     public void onResume() {
         super.onResume();
         if (mBtAdaper != null) {
-            mPairedDevices = new ArrayList<BluetoothDevice>(mBtAdaper.getBondedDevices());
-            if (DEBUG) {
-                for (BluetoothDevice device : mPairedDevices) {
-                    Log.d(Utils.TAG, "device = " + device);
-                }
+            for (BluetoothDevice device : mBtAdaper.getBondedDevices()) {
+                BlueToothPairedDeviceController.getInstance().addDevice(device);
+            }
+            if (BlueToothPairedDeviceController.getInstance().getListSize() > 0) {
+                mDataAdapter.notifyDataSetChanged();
             }
         }
     }
@@ -184,12 +234,12 @@ public class MainFragment extends Fragment implements OnItemClickListener {
 
         @Override
         public int getCount() {
-            return mPairedDevices.size();
+            return BlueToothPairedDeviceController.getInstance().getListSize();
         }
 
         @Override
         public Object getItem(int position) {
-            return mPairedDevices.get(position);
+            return BlueToothPairedDeviceController.getInstance().getList().get(position);
         }
 
         @Override
@@ -207,27 +257,57 @@ public class MainFragment extends Fragment implements OnItemClickListener {
                 holder.name = (TextView) view.findViewById(R.id.textView_name);
                 holder.address = (TextView) view.findViewById(R.id.textView_addr);
                 holder.status = (TextView) view.findViewById(R.id.textView_status);
+                holder.connect = (Button) view.findViewById(R.id.btn_connect);
                 view.setTag(holder);
             } else {
                 view = convertView;
                 holder = (ViewHolder) view.getTag();
             }
-            BluetoothDevice device = (BluetoothDevice) getItem(position);
+            final BluetoothDevice device = (BluetoothDevice) getItem(position);
             holder.name.setText("Name: " + device.getName());
             holder.address.setText("Address: " + device.getAddress());
             holder.status.setText("Status: " + device.getBondState());
+            if (device.getBondState() != BluetoothDevice.BOND_BONDING) {
+                holder.connect.setVisibility(View.VISIBLE);
+                holder.connect.setOnClickListener(new OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (mClientThread != null) {
+                            ((ClientThread) mClientThread).cancel();
+                        }
+                        mClientThread = new ClientThread(device, mClientHandler);
+                        mClientThread.start();
+                    }
+                });
+            } else {
+                holder.connect.setVisibility(View.GONE);
+            }
             return view;
         }
 
         private class ViewHolder {
             public TextView name, address, status;
+            public Button connect;
         }
     }
 
     @Override
     public void onStart() {
         super.onStart();
-        registerStateChangedReceiver();
+        enableBlueTooth();
+        registerBlueToothReceiver();
+        if (mServerThread == null) {
+            mServerThread = new ServerThread(mBtAdaper, mServerHandler);
+            mServerThread.start();
+        }
+    }
+
+    private void enableBlueTooth() {
+        Log.d(Utils.TAG, "bt enable = " + mBtAdaper.isEnabled());
+        if (!mBtAdaper.isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enableBtIntent, REQUEST_CODE_ENABLE_BT);
+        }
     }
 
     @Override
@@ -238,12 +318,14 @@ public class MainFragment extends Fragment implements OnItemClickListener {
     @Override
     public void onStop() {
         super.onStop();
-        unregisterStateChangedReceiver();
+        unregisterBlueToothReceiver();
+        if (mServerThread != null) {
+            ((ServerThread) mServerThread).cancel();
+        }
     }
 
     @Override
     public void onDestroy() {
-        getActivity().unregisterReceiver(mBtFoundReceiver);
         super.onDestroy();
     }
 
@@ -256,8 +338,7 @@ public class MainFragment extends Fragment implements OnItemClickListener {
             if (BluetoothDevice.ACTION_FOUND.equals(action)) {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 Log.d(Utils.TAG, "mBtFoundReceiver = " + device);
-                if (!mPairedDevices.contains(device)) {
-                    mPairedDevices.add(device);
+                if (BlueToothPairedDeviceController.getInstance().addDevice(device)) {
                     mDataAdapter.notifyDataSetChanged();
                 }
             }
@@ -268,18 +349,6 @@ public class MainFragment extends Fragment implements OnItemClickListener {
     @Override
     public void onItemClick(AdapterView<?> parent, View view, int position,
             long id) {
-        BluetoothDevice device = mPairedDevices.get(position);
-        if (device != null) {
-            CheckBox cb = (CheckBox) view.findViewById(R.id.checkBox_server);
-            if (cb.isChecked()) {
-                ServerThread server = new ServerThread(mBtAdaper, mHandler);
-                server.run();
-            } else {
-                ClientThread client = new ClientThread(device, mHandler);
-                client.run();
-            }
-        }
-        
     }
 
 }

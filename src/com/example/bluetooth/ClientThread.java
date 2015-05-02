@@ -118,6 +118,12 @@ public class ClientThread extends Thread {
         Looper.loop();
     }
 
+    public void sendData(byte[] data) {
+        Message m = new Message();
+        m.obj = data;
+        mIncomingHandler.sendMessage(m);
+    }
+
     public void cancel() {
         try {
             if (mSocket.isConnected()) {
